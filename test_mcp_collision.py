@@ -124,5 +124,41 @@ class TestCliEndToEnd(unittest.TestCase):
         self.assertIn("tool_one", data["collisions"])
 
 
+class TestJsoncConfigs(unittest.TestCase):
+    """Comment stripping must not eat // inside string values."""
+
+    def test_url_in_env_survives(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "cfg.json"
+            p.write_text(json.dumps({"mcpServers": {"gh": {"command": "npx",
+                                                          "env": {"BASE_URL": "https://api.github.com/v1"}}}}))
+            servers = mc.load_config(p)
+            self.assertEqual(servers["gh"]["env"]["BASE_URL"], "https://api.github.com/v1")
+
+    def test_comments_and_trailing_commas(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "cfg.jsonc"
+            p.write_text('{\n // note\n "mcpServers": {"a": {"command": "x",\n'
+                         '  "env": {"U": "https://x.dev/a"}},} /* tail */\n}\n')
+            servers = mc.load_config(p)
+            self.assertEqual(servers["a"]["env"]["U"], "https://x.dev/a")
+
+
+class TestSilentServer(unittest.TestCase):
+    """A server that never answers must time out, not hang the scan."""
+
+    def test_silent_server_times_out(self):
+        import time
+        started = time.time()
+        tools, error = mc.list_tools(["sleep", "30"], timeout=1)
+        self.assertIsNone(tools)
+        self.assertIn("timeout", (error or "").lower())
+        self.assertLess(time.time() - started, 15)
+
+
 if __name__ == "__main__":
     unittest.main()

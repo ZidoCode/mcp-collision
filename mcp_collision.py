@@ -24,6 +24,7 @@ Zero dependencies. Python 3.8+.
 import argparse
 import json
 import os
+import select
 import re
 import subprocess
 import sys
@@ -65,6 +66,11 @@ def list_tools(command, cwd=None, env_extra=None, timeout=20):
         proc.stdin.flush()
 
     def recv():
+        # readline() on a silent server blocks forever; bound it to the same
+        # timeout as the rest of the handshake.
+        ready, _, _ = select.select([proc.stdout], [], [], timeout)
+        if not ready:
+            return None
         line = proc.stdout.readline()
         if not line:
             return None
@@ -102,13 +108,55 @@ def list_tools(command, cwd=None, env_extra=None, timeout=20):
             proc.kill()
 
 
+def _strip_jsonc(text: str) -> str:
+    """Remove // and /* */ comments, but only outside JSON strings.
+
+    A blanket regex eats the "//" in every URL ("https://host"), which turns a
+    perfectly good config into invalid JSON.
+    """
+    out = []
+    i = 0
+    in_string = False
+    escaped = False
+    length = len(text)
+    while i < length:
+        char = text[i]
+        if in_string:
+            out.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            i += 1
+            continue
+        if char == '"':
+            in_string = True
+            out.append(char)
+            i += 1
+            continue
+        if char == "/" and i + 1 < length and text[i + 1] == "/":
+            while i < length and text[i] != "\n":
+                i += 1
+            continue
+        if char == "/" and i + 1 < length and text[i + 1] == "*":
+            i += 2
+            while i + 1 < length and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
 def load_config(path):
     """Load an MCP config file, return {server_name: {command: [...], env: {}}}."""
     with open(path, "r", encoding="utf-8") as f:
         text = f.read()
-    # tolerate JSONC: strip // and /* */ comments, trailing commas
-    text = re.sub(r"//[^\n]*", "", text)
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    # tolerate JSONC: strip comments only OUTSIDE strings, then trailing commas
+    text = _strip_jsonc(text)
     text = re.sub(r",(\s*[}\]])", r"\1", text)
     cfg = json.loads(text)
     servers = cfg.get("mcpServers") or cfg.get("mcp_servers") or {}
